@@ -308,7 +308,7 @@ CREATE TYPE rail_enum AS ENUM (
 
 ```sql
 CREATE TABLE legal_entities (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     code                    VARCHAR(20) NOT NULL UNIQUE,
     legal_name              VARCHAR(200) NOT NULL,
     jurisdiction            CHAR(2) NOT NULL,
@@ -323,7 +323,7 @@ CREATE TABLE legal_entities (
     supported_rails         rail_enum[] NOT NULL,
     tax_id_requirements     JSONB NOT NULL DEFAULT '[]',
     reporting_obligations   JSONB NOT NULL DEFAULT '{}',
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -334,7 +334,7 @@ CREATE INDEX idx_legal_entities_jurisdiction ON legal_entities(jurisdiction);
 
 ```sql
 CREATE TABLE tenants (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     display_name            VARCHAR(100) NOT NULL,
     legal_name              VARCHAR(200) NOT NULL,
     country                 CHAR(2) NOT NULL,
@@ -345,7 +345,7 @@ CREATE TABLE tenants (
     kyc_level               kyc_level_enum NOT NULL DEFAULT 'basic',
     netting_enabled         BOOLEAN NOT NULL DEFAULT false,
     netting_window_minutes  INTEGER NOT NULL DEFAULT 5,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -359,24 +359,24 @@ CREATE INDEX idx_tenants_status ON tenants(tenant_status) WHERE tenant_status = 
 ```sql
 -- PG 18 Temporal Constraint (no overlapping periods)
 CREATE TABLE pricing_policies (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id),
     fx_margin_bps           INTEGER NOT NULL DEFAULT 150,
     fee_structure           JSONB NOT NULL DEFAULT '{"transfer_fee_flat": 0}',
     corridor_overrides      JSONB NOT NULL DEFAULT '{}',
     valid_period            TSTZRANGE NOT NULL,
     EXCLUDE USING gist (tenant_id WITH =, valid_period WITH &&),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    
 );
 
 CREATE TABLE limit_policies (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id),
     daily_limit_usd         NUMERIC(15,2) NOT NULL DEFAULT 10000,
     per_transfer_limit_usd  NUMERIC(15,2) NOT NULL DEFAULT 50000,
     rate_limit_rpm          INTEGER NOT NULL DEFAULT 100,
     effective_from          DATE NOT NULL DEFAULT CURRENT_DATE,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     CONSTRAINT unique_tenant_limit UNIQUE (tenant_id)
 );
 ```
@@ -385,14 +385,14 @@ CREATE TABLE limit_policies (
 
 ```sql
 CREATE TABLE wallets (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id),
     currency                CHAR(3) NOT NULL,
     tb_account_id           NUMERIC(39,0) NOT NULL UNIQUE,
     cached_balance          NUMERIC(20,2) NOT NULL DEFAULT 0,
     cached_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status                  VARCHAR(20) NOT NULL DEFAULT 'active',
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_tenant_currency UNIQUE (tenant_id, currency)
 );
@@ -432,7 +432,7 @@ CREATE TABLE transfers (
             ELSE 'UNKNOWN'
         END
     ) STORED,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     completed_at            TIMESTAMPTZ,
     CONSTRAINT unique_idempotency UNIQUE (tenant_id, idempotency_key)
 ) PARTITION BY LIST (compliance_region);
@@ -456,7 +456,7 @@ CREATE POLICY fca_data_residency ON transfers_uk USING (compliance_region = 'UK'
 
 ```sql
 CREATE TABLE netting_groups (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id),
     corridor                VARCHAR(7) NOT NULL,
     gross_inbound           NUMERIC(20,2) NOT NULL DEFAULT 0,
@@ -468,7 +468,7 @@ CREATE TABLE netting_groups (
     window_end              TIMESTAMPTZ NOT NULL,
     status                  VARCHAR(20) NOT NULL DEFAULT 'open',
     executed_at             TIMESTAMPTZ,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    
 );
 ```
 
@@ -476,7 +476,7 @@ CREATE TABLE netting_groups (
 
 ```sql
 CREATE TABLE regional_settlements (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     legal_entity_id         UUID NOT NULL REFERENCES legal_entities(id),
     currency                CHAR(3) NOT NULL,
     tb_account_id           NUMERIC(39,0) NOT NULL UNIQUE,
@@ -487,7 +487,7 @@ CREATE TABLE regional_settlements (
     alert_threshold         NUMERIC(20,2) NOT NULL,
     last_reconciled_at      TIMESTAMPTZ,
     reconciliation_status   VARCHAR(20) DEFAULT 'pending',
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_entity_currency UNIQUE (legal_entity_id, currency)
 );
@@ -497,7 +497,7 @@ CREATE TABLE regional_settlements (
 
 ```sql
 CREATE TABLE reconciliation_reports (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     legal_entity_id         UUID NOT NULL REFERENCES legal_entities(id),
     reconciliation_date     DATE NOT NULL,
     fbo_tigerbeetle_sum     NUMERIC(20,2),
@@ -511,7 +511,7 @@ CREATE TABLE reconciliation_reports (
     status                  VARCHAR(20) NOT NULL DEFAULT 'pending',
     reviewed_by             VARCHAR(100),
     reviewed_at             TIMESTAMPTZ,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     CONSTRAINT unique_recon_date UNIQUE (legal_entity_id, reconciliation_date)
 );
 ```
@@ -521,7 +521,7 @@ CREATE TABLE reconciliation_reports (
 ```sql
 -- DHE Records (Indonesia Devisa Hasil Ekspor)
 CREATE TABLE dhe_records (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id),
     legal_entity_id         UUID NOT NULL REFERENCES legal_entities(id),
     period_year             INTEGER NOT NULL,
@@ -532,13 +532,13 @@ CREATE TABLE dhe_records (
     dhe_deposited           NUMERIC(20,2) DEFAULT 0,
     compliant               BOOLEAN NOT NULL DEFAULT false,
     reported_to_bi          BOOLEAN NOT NULL DEFAULT false,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     CONSTRAINT unique_dhe_period UNIQUE (tenant_id, period_year, period_month)
 );
 
 -- CESOP Reports (EU Central Electronic System of Payment Information)
 CREATE TABLE cesop_reports (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     legal_entity_id         UUID NOT NULL REFERENCES legal_entities(id),
     period_year             INTEGER NOT NULL,
     period_quarter          INTEGER NOT NULL,
@@ -547,7 +547,7 @@ CREATE TABLE cesop_reports (
     reportable_payees       INTEGER NOT NULL DEFAULT 0,
     report_status           VARCHAR(20) NOT NULL DEFAULT 'pending',
     submitted_at            TIMESTAMPTZ,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     CONSTRAINT unique_cesop_period UNIQUE (legal_entity_id, period_year, period_quarter)
 );
 
@@ -587,7 +587,7 @@ CREATE TABLE audit_trail (
     after_state             JSONB,
     ip_address              INET,
     request_id              VARCHAR(100),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ,
     compliance_region       TEXT GENERATED ALWAYS AS (...) STORED
 ) PARTITION BY LIST (compliance_region);
 

@@ -3,7 +3,7 @@
 
 -- Limit policies define rate limits and volume caps per tenant
 CREATE TABLE limit_policies (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     -- Volume limits (in USD equivalent)
     daily_limit_usd         NUMERIC(15,2) NOT NULL DEFAULT 10000,
@@ -18,7 +18,7 @@ CREATE TABLE limit_policies (
     -- Effective date
     effective_from          DATE NOT NULL DEFAULT CURRENT_DATE,
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Only one active limit policy per tenant

@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- Each tenant can have different pricing at different time periods
 -- EXCLUDE constraint prevents overlapping valid periods
 CREATE TABLE pricing_policies (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     -- FX margin in basis points (100 bps = 1%)
     fx_margin_bps           INTEGER NOT NULL DEFAULT 150,
@@ -22,7 +22,7 @@ CREATE TABLE pricing_policies (
     valid_from              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     valid_until             TIMESTAMPTZ,
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
 
     -- Temporal constraint: prevent overlapping pricing periods for same tenant
     CONSTRAINT pricing_no_overlap EXCLUDE USING gist (

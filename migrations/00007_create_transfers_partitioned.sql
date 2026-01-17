@@ -4,7 +4,7 @@
 -- Transfers table with geo-partitioning by compliance_region
 -- compliance_region is derived from currencies and determines data residency
 CREATE TABLE transfers (
-    id                      UUID NOT NULL DEFAULT gen_random_uuid(),
+    id                      UUID NOT NULL DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL,
     -- Legal entity routing
     source_legal_entity_id  UUID,
@@ -50,7 +50,7 @@ CREATE TABLE transfers (
         END
     ) STORED,
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at            TIMESTAMPTZ,
 

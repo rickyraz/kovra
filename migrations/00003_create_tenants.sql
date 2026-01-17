@@ -3,7 +3,7 @@
 
 -- Tenants are B2B clients (e-commerce platforms, sellers, corporate treasury)
 CREATE TABLE tenants (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     display_name            VARCHAR(100) NOT NULL,
     legal_name              VARCHAR(200) NOT NULL,
     country                 CHAR(2) NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE tenants (
     -- Metadata
     metadata                JSONB NOT NULL DEFAULT '{}',
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

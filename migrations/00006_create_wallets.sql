@@ -4,7 +4,7 @@
 -- Wallets link tenants to TigerBeetle accounts
 -- Each tenant can have multiple wallets (one per currency)
 CREATE TABLE wallets (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     currency                CHAR(3) NOT NULL,
     -- TigerBeetle account ID (128-bit encoded as numeric)
@@ -16,7 +16,7 @@ CREATE TABLE wallets (
     -- Wallet status
     status                  VARCHAR(20) NOT NULL DEFAULT 'active',
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- One wallet per tenant per currency

@@ -4,7 +4,7 @@
 -- Legal entities represent licensed Kovra entities per region
 -- KOVRA_EU (Germany), KOVRA_UK (UK), KOVRA_ID (Indonesia)
 CREATE TABLE legal_entities (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     code                    VARCHAR(20) NOT NULL UNIQUE,
     legal_name              VARCHAR(200) NOT NULL,
     jurisdiction            CHAR(2) NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE legal_entities (
     supported_currencies    CHAR(3)[] NOT NULL,
     supported_rails         rail_enum[] NOT NULL,
     -- Timestamps
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
