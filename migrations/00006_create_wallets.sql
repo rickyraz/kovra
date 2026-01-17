@@ -1,0 +1,38 @@
+-- +goose Up
+-- +goose StatementBegin
+
+-- Wallets link tenants to TigerBeetle accounts
+-- Each tenant can have multiple wallets (one per currency)
+CREATE TABLE wallets (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    currency                CHAR(3) NOT NULL,
+    -- TigerBeetle account ID (128-bit encoded as numeric)
+    tb_account_id           NUMERIC(39,0) NOT NULL UNIQUE,
+    -- Cached balance from TigerBeetle (for display/validation)
+    cached_balance          NUMERIC(20,2) NOT NULL DEFAULT 0,
+    cached_pending          NUMERIC(20,2) NOT NULL DEFAULT 0,
+    cached_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Wallet status
+    status                  VARCHAR(20) NOT NULL DEFAULT 'active',
+    -- Timestamps
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- One wallet per tenant per currency
+    CONSTRAINT unique_tenant_currency UNIQUE (tenant_id, currency)
+);
+
+-- Indexes
+CREATE INDEX idx_wallets_tenant ON wallets(tenant_id);
+CREATE INDEX idx_wallets_tb_account ON wallets(tb_account_id);
+CREATE INDEX idx_wallets_currency ON wallets(currency);
+
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+
+DROP TABLE IF EXISTS wallets;
+
+-- +goose StatementEnd

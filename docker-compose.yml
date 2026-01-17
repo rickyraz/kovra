@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: kovra-postgres
+    environment:
+      POSTGRES_USER: kovra
+      POSTGRES_PASSWORD: kovra_dev
+      POSTGRES_DB: kovra
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kovra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: kovra-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Week 1: TigerBeetle single node
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
+    container_name: kovra-tigerbeetle
+    command: start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle
+    ports:
+      - "3000:3000"
+    volumes:
+      - tigerbeetle_data:/data
+    profiles: ["week1", "default"]
+
+  # Week 2: TigerBeetle 3-node cluster
+  tigerbeetle-0:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
+    container_name: kovra-tigerbeetle-0
+    command: start --addresses=0.0.0.0:3000,tigerbeetle-1:3000,tigerbeetle-2:3000 /data/0_0.tigerbeetle
+    ports:
+      - "3000:3000"
+    volumes:
+      - tigerbeetle_0_data:/data
+    profiles: ["week2"]
+
+  tigerbeetle-1:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
+    container_name: kovra-tigerbeetle-1
+    command: start --addresses=tigerbeetle-0:3000,0.0.0.0:3000,tigerbeetle-2:3000 /data/0_1.tigerbeetle
+    ports:
+      - "3001:3000"
+    volumes:
+      - tigerbeetle_1_data:/data
+    profiles: ["week2"]
+
+  tigerbeetle-2:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
+    container_name: kovra-tigerbeetle-2
+    command: start --addresses=tigerbeetle-0:3000,tigerbeetle-1:3000,0.0.0.0:3000 /data/0_2.tigerbeetle
+    ports:
+      - "3002:3000"
+    volumes:
+      - tigerbeetle_2_data:/data
+    profiles: ["week2"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  tigerbeetle_data:
+  tigerbeetle_0_data:
+  tigerbeetle_1_data:
+  tigerbeetle_2_data:
