@@ -35,7 +35,6 @@ type Transfer struct {
 	ComplianceStatus     string
 	ScreenedAt           *time.Time
 	ComplianceRegion     ComplianceRegion
-	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	CompletedAt          *time.Time
 }
@@ -80,8 +79,8 @@ type TransferFilter struct {
 	FromCurrency     *string
 	ToCurrency       *string
 	ComplianceRegion *ComplianceRegion
-	CreatedAfter     *time.Time
-	CreatedBefore    *time.Time
+	UpdatedAfter     *time.Time
+	UpdatedBefore    *time.Time
 	Limit            int
 	Offset           int
 }

@@ -1,15 +1,13 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18.1-alpine
     container_name: kovra-postgres
     environment:
       POSTGRES_USER: kovra
       POSTGRES_PASSWORD: kovra_dev
       POSTGRES_DB: kovra
     ports:
-      - "5432:5432"
+      - "5455:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,10 +17,10 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.4-alpine
     container_name: kovra-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:

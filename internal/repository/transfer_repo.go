@@ -2,9 +2,8 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"math/big"
-	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -12,164 +11,94 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"kovra/internal/models"
+	"kovra/internal/repository/queries"
 )
 
 // TransferRepository handles transfer data access.
 type TransferRepository struct {
-	pool *pgxpool.Pool
+	q *queries.Queries
 }
 
 // NewTransferRepository creates a new transfer repository.
 func NewTransferRepository(pool *pgxpool.Pool) *TransferRepository {
-	return &TransferRepository{pool: pool}
+	return &TransferRepository{q: queries.New(pool)}
 }
 
 // Create creates a new transfer.
 func (r *TransferRepository) Create(ctx context.Context, params models.CreateTransferParams) (*models.Transfer, error) {
-	query := `
-		INSERT INTO transfers (
-			tenant_id, source_legal_entity_id, dest_legal_entity_id, quote_id, recipient_id,
-			idempotency_key, from_currency, to_currency, from_amount, to_amount, fx_rate, total_fee, rail
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING id, tenant_id, source_legal_entity_id, dest_legal_entity_id, quote_id, batch_id, recipient_id,
-			idempotency_key, from_currency, to_currency, from_amount, to_amount, fx_rate, total_fee,
-			status, failure_reason, rail, rail_reference, netting_group_id, is_netted,
-			tb_transfer_ids, risk_score, compliance_status, screened_at, compliance_region,
-			created_at, updated_at, completed_at`
+	row, err := r.q.CreateTransfer(ctx, queries.CreateTransferParams{
+		TenantID:            params.TenantID,
+		SourceLegalEntityID: uuidToNullable(params.SourceLegalEntityID),
+		DestLegalEntityID:   uuidToNullable(params.DestLegalEntityID),
+		QuoteID:             uuidToNullable(params.QuoteID),
+		RecipientID:         uuidToNullable(params.RecipientID),
+		IdempotencyKey:      stringToNullable(params.IdempotencyKey),
+		FromCurrency:        params.FromCurrency,
+		ToCurrency:          params.ToCurrency,
+		FromAmount:          decimalToNumeric(params.FromAmount),
+		ToAmount:            decimalToNumeric(params.ToAmount),
+		FxRate:              decimalToNumeric(params.FXRate),
+		TotalFee:            decimalToNumeric(params.TotalFee),
+		Rail:                railToNullable(params.Rail),
+	})
+	if err != nil {
+		return nil, err
+	}
 
-	row := r.pool.QueryRow(ctx, query,
-		params.TenantID,
-		params.SourceLegalEntityID,
-		params.DestLegalEntityID,
-		params.QuoteID,
-		params.RecipientID,
-		params.IdempotencyKey,
-		params.FromCurrency,
-		params.ToCurrency,
-		params.FromAmount,
-		params.ToAmount,
-		params.FXRate,
-		params.TotalFee,
-		params.Rail,
-	)
-
-	return r.scan(row)
+	return r.toModel(row), nil
 }
 
 // GetByID retrieves a transfer by ID.
 func (r *TransferRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Transfer, error) {
-	query := `
-		SELECT id, tenant_id, source_legal_entity_id, dest_legal_entity_id, quote_id, batch_id, recipient_id,
-			idempotency_key, from_currency, to_currency, from_amount, to_amount, fx_rate, total_fee,
-			status, failure_reason, rail, rail_reference, netting_group_id, is_netted,
-			tb_transfer_ids, risk_score, compliance_status, screened_at, compliance_region,
-			created_at, updated_at, completed_at
-		FROM transfers
-		WHERE id = $1`
-
-	row := r.pool.QueryRow(ctx, query, id)
-	transfer, err := r.scan(row)
+	row, err := r.q.GetTransferByID(ctx, id)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
-	return transfer, err
+	if err != nil {
+		return nil, err
+	}
+	return r.toModel(row), nil
 }
 
 // GetByIdempotencyKey retrieves a transfer by tenant and idempotency key.
 func (r *TransferRepository) GetByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*models.Transfer, error) {
-	query := `
-		SELECT id, tenant_id, source_legal_entity_id, dest_legal_entity_id, quote_id, batch_id, recipient_id,
-			idempotency_key, from_currency, to_currency, from_amount, to_amount, fx_rate, total_fee,
-			status, failure_reason, rail, rail_reference, netting_group_id, is_netted,
-			tb_transfer_ids, risk_score, compliance_status, screened_at, compliance_region,
-			created_at, updated_at, completed_at
-		FROM transfers
-		WHERE tenant_id = $1 AND idempotency_key = $2`
-
-	row := r.pool.QueryRow(ctx, query, tenantID, key)
-	transfer, err := r.scan(row)
+	row, err := r.q.GetTransferByIdempotencyKey(ctx, queries.GetTransferByIdempotencyKeyParams{
+		TenantID:       tenantID,
+		IdempotencyKey: pgtype.Text{String: key, Valid: true},
+	})
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
-	return transfer, err
+	if err != nil {
+		return nil, err
+	}
+	return r.toModel(row), nil
 }
 
 // UpdateStatus updates the transfer status.
 func (r *TransferRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status models.TransferStatus, failureReason *string) error {
-	query := `
-		UPDATE transfers
-		SET status = $2, failure_reason = $3, updated_at = NOW(),
-			completed_at = CASE WHEN $2 IN ('completed', 'rolled_back', 'cancelled', 'rejected') THEN NOW() ELSE completed_at END
-		WHERE id = $1`
-
-	_, err := r.pool.Exec(ctx, query, id, status, failureReason)
-	return err
+	return r.q.UpdateTransferStatus(ctx, queries.UpdateTransferStatusParams{
+		ID:            id,
+		Status:        queries.TransferStatusEnum(status),
+		FailureReason: stringToNullable(failureReason),
+	})
 }
 
 // UpdateTBTransferIDs updates the TigerBeetle transfer IDs.
 func (r *TransferRepository) UpdateTBTransferIDs(ctx context.Context, id uuid.UUID, tbIDs []*big.Int) error {
-	// Convert to array of numeric strings
-	numericIDs := make([]string, len(tbIDs))
+	numericIDs := make([]pgtype.Numeric, len(tbIDs))
 	for i, n := range tbIDs {
-		numericIDs[i] = n.String()
+		numericIDs[i] = bigIntToNumeric(n)
 	}
 
-	query := `
-		UPDATE transfers
-		SET tb_transfer_ids = $2::numeric[], updated_at = NOW()
-		WHERE id = $1`
-
-	_, err := r.pool.Exec(ctx, query, id, numericIDs)
-	return err
+	return r.q.UpdateTransferTBTransferIDs(ctx, queries.UpdateTransferTBTransferIDsParams{
+		ID:            id,
+		TbTransferIds: numericIDs,
+	})
 }
 
 // ListByTenant retrieves transfers for a tenant with filters.
 func (r *TransferRepository) ListByTenant(ctx context.Context, tenantID uuid.UUID, filter models.TransferFilter) ([]*models.Transfer, error) {
-	var conditions []string
-	var args []any
-	argNum := 1
-
-	conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argNum))
-	args = append(args, tenantID)
-	argNum++
-
-	if filter.Status != nil {
-		conditions = append(conditions, fmt.Sprintf("status = $%d", argNum))
-		args = append(args, *filter.Status)
-		argNum++
-	}
-
-	if filter.FromCurrency != nil {
-		conditions = append(conditions, fmt.Sprintf("from_currency = $%d", argNum))
-		args = append(args, *filter.FromCurrency)
-		argNum++
-	}
-
-	if filter.ToCurrency != nil {
-		conditions = append(conditions, fmt.Sprintf("to_currency = $%d", argNum))
-		args = append(args, *filter.ToCurrency)
-		argNum++
-	}
-
-	if filter.ComplianceRegion != nil {
-		conditions = append(conditions, fmt.Sprintf("compliance_region = $%d", argNum))
-		args = append(args, *filter.ComplianceRegion)
-		argNum++
-	}
-
-	if filter.CreatedAfter != nil {
-		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", argNum))
-		args = append(args, *filter.CreatedAfter)
-		argNum++
-	}
-
-	if filter.CreatedBefore != nil {
-		conditions = append(conditions, fmt.Sprintf("created_at < $%d", argNum))
-		args = append(args, *filter.CreatedBefore)
-		argNum++
-	}
-
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
@@ -179,92 +108,147 @@ func (r *TransferRepository) ListByTenant(ctx context.Context, tenantID uuid.UUI
 		offset = 0
 	}
 
-	query := fmt.Sprintf(`
-		SELECT id, tenant_id, source_legal_entity_id, dest_legal_entity_id, quote_id, batch_id, recipient_id,
-			idempotency_key, from_currency, to_currency, from_amount, to_amount, fx_rate, total_fee,
-			status, failure_reason, rail, rail_reference, netting_group_id, is_netted,
-			tb_transfer_ids, risk_score, compliance_status, screened_at, compliance_region,
-			created_at, updated_at, completed_at
-		FROM transfers
-		WHERE %s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d`,
-		strings.Join(conditions, " AND "),
-		argNum,
-		argNum+1,
-	)
-	args = append(args, limit, offset)
-
-	return r.scanMany(ctx, query, args...)
-}
-
-func (r *TransferRepository) scanMany(ctx context.Context, query string, args ...any) ([]*models.Transfer, error) {
-	rows, err := r.pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query transfers: %w", err)
-	}
-	defer rows.Close()
-
-	var transfers []*models.Transfer
-	for rows.Next() {
-		t, err := r.scan(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan transfer: %w", err)
-		}
-		transfers = append(transfers, t)
-	}
-
-	return transfers, rows.Err()
-}
-
-func (r *TransferRepository) scan(s scanner) (*models.Transfer, error) {
-	var t models.Transfer
-	var tbTransferIDs []pgtype.Numeric
-
-	err := s.Scan(
-		&t.ID,
-		&t.TenantID,
-		&t.SourceLegalEntityID,
-		&t.DestLegalEntityID,
-		&t.QuoteID,
-		&t.BatchID,
-		&t.RecipientID,
-		&t.IdempotencyKey,
-		&t.FromCurrency,
-		&t.ToCurrency,
-		&t.FromAmount,
-		&t.ToAmount,
-		&t.FXRate,
-		&t.TotalFee,
-		&t.Status,
-		&t.FailureReason,
-		&t.Rail,
-		&t.RailReference,
-		&t.NettingGroupID,
-		&t.IsNetted,
-		&tbTransferIDs,
-		&t.RiskScore,
-		&t.ComplianceStatus,
-		&t.ScreenedAt,
-		&t.ComplianceRegion,
-		&t.CreatedAt,
-		&t.UpdatedAt,
-		&t.CompletedAt,
-	)
+	rows, err := r.q.ListTransfersByTenant(ctx, queries.ListTransfersByTenantParams{
+		TenantID:         tenantID,
+		Limit:            int32(limit),
+		Offset:           int32(offset),
+		Status:           transferStatusToNullable(filter.Status),
+		FromCurrency:     stringPtrToNullable(filter.FromCurrency),
+		ToCurrency:       stringPtrToNullable(filter.ToCurrency),
+		ComplianceRegion: complianceRegionToNullable(filter.ComplianceRegion),
+		UpdatedAfter:     timeToNullable(filter.UpdatedAfter),
+		UpdatedBefore:    timeToNullable(filter.UpdatedBefore),
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert pgtype.Numeric array to []*big.Int
-	if len(tbTransferIDs) > 0 {
-		t.TBTransferIDs = make([]*big.Int, len(tbTransferIDs))
-		for i, n := range tbTransferIDs {
-			if n.Valid {
-				t.TBTransferIDs[i] = new(big.Int)
-				t.TBTransferIDs[i].SetString(n.Int.String(), 10)
-			}
+	return r.toModels(rows), nil
+}
+
+func (r *TransferRepository) toModel(row queries.Transfer) *models.Transfer {
+	t := &models.Transfer{
+		ID:               row.ID,
+		TenantID:         row.TenantID,
+		FromCurrency:     row.FromCurrency,
+		ToCurrency:       row.ToCurrency,
+		FromAmount:       numericToDecimal(row.FromAmount),
+		ToAmount:         numericToDecimal(row.ToAmount),
+		FXRate:           numericToDecimal(row.FxRate),
+		TotalFee:         numericToDecimal(row.TotalFee),
+		Status:           models.TransferStatus(row.Status),
+		IsNetted:         row.IsNetted,
+		ComplianceStatus: row.ComplianceStatus,
+		ComplianceRegion: models.ComplianceRegion(row.ComplianceRegion),
+		UpdatedAt:        row.UpdatedAt,
+	}
+
+	if row.SourceLegalEntityID.Valid {
+		id := uuid.UUID(row.SourceLegalEntityID.Bytes)
+		t.SourceLegalEntityID = &id
+	}
+	if row.DestLegalEntityID.Valid {
+		id := uuid.UUID(row.DestLegalEntityID.Bytes)
+		t.DestLegalEntityID = &id
+	}
+	if row.QuoteID.Valid {
+		id := uuid.UUID(row.QuoteID.Bytes)
+		t.QuoteID = &id
+	}
+	if row.BatchID.Valid {
+		id := uuid.UUID(row.BatchID.Bytes)
+		t.BatchID = &id
+	}
+	if row.RecipientID.Valid {
+		id := uuid.UUID(row.RecipientID.Bytes)
+		t.RecipientID = &id
+	}
+	if row.IdempotencyKey.Valid {
+		t.IdempotencyKey = &row.IdempotencyKey.String
+	}
+	if row.FailureReason.Valid {
+		t.FailureReason = &row.FailureReason.String
+	}
+	if row.Rail.Valid {
+		rail := models.Rail(row.Rail.RailEnum)
+		t.Rail = &rail
+	}
+	if row.RailReference.Valid {
+		t.RailReference = &row.RailReference.String
+	}
+	if row.NettingGroupID.Valid {
+		id := uuid.UUID(row.NettingGroupID.Bytes)
+		t.NettingGroupID = &id
+	}
+	if row.RiskScore.Valid {
+		score := int(row.RiskScore.Int32)
+		t.RiskScore = &score
+	}
+	if row.ScreenedAt.Valid {
+		t.ScreenedAt = &row.ScreenedAt.Time
+	}
+	if row.CompletedAt.Valid {
+		t.CompletedAt = &row.CompletedAt.Time
+	}
+
+	// Convert TBTransferIDs
+	if len(row.TbTransferIds) > 0 {
+		t.TBTransferIDs = make([]*big.Int, len(row.TbTransferIds))
+		for i, n := range row.TbTransferIds {
+			t.TBTransferIDs[i] = numericToBigInt(n)
 		}
 	}
 
-	return &t, nil
+	return t
+}
+
+func (r *TransferRepository) toModels(rows []queries.Transfer) []*models.Transfer {
+	result := make([]*models.Transfer, len(rows))
+	for i, row := range rows {
+		result[i] = r.toModel(row)
+	}
+	return result
+}
+
+// Additional helper functions
+func stringToNullable(s *string) pgtype.Text {
+	if s == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: *s, Valid: true}
+}
+
+func stringPtrToNullable(s *string) pgtype.Text {
+	if s == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: *s, Valid: true}
+}
+
+func railToNullable(r *models.Rail) queries.NullRailEnum {
+	if r == nil {
+		return queries.NullRailEnum{}
+	}
+	return queries.NullRailEnum{RailEnum: queries.RailEnum(*r), Valid: true}
+}
+
+func transferStatusToNullable(s *models.TransferStatus) queries.NullTransferStatusEnum {
+	if s == nil {
+		return queries.NullTransferStatusEnum{}
+	}
+	return queries.NullTransferStatusEnum{TransferStatusEnum: queries.TransferStatusEnum(*s), Valid: true}
+}
+
+func complianceRegionToNullable(r *models.ComplianceRegion) pgtype.Text {
+	if r == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: string(*r), Valid: true}
+}
+
+func timeToNullable(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
 }

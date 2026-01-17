@@ -63,7 +63,7 @@ func Load() (*Config, error) {
 	cfg.TigerBeetle.Addresses = parseAddresses(addresses)
 
 	// Redis
-	cfg.Redis.URL = getEnv("REDIS_URL", "redis://localhost:6379")
+	cfg.Redis.URL = getEnv("REDIS_URL", "redis://localhost:6380")
 
 	// Server
 	cfg.Server.Port = getEnvInt("API_PORT", 8080)

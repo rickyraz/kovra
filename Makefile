@@ -1,11 +1,11 @@
 .PHONY: setup setup-week2 migrate migrate-down migrate-status run test test-coverage lint generate clean
 
 # Default database URL
-DATABASE_URL ?= postgresql://kovra:kovra_dev@localhost:5432/kovra?sslmode=disable
+DATABASE_URL ?= postgresql://kovra:kovra_dev@localhost:5455/kovra?sslmode=disable
 
 # Development setup (Week 1: single TigerBeetle node)
 setup:
-	docker-compose up -d postgres redis tigerbeetle
+	docker compose up -d postgres redis tigerbeetle
 	@echo "Waiting for PostgreSQL to be ready..."
 	@sleep 3
 	@echo "Infrastructure ready!"
