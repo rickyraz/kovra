@@ -21,12 +21,13 @@ import (
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("failed to run: %v", err)
+		os.Exit(1) // explicit, defer sudah jalan
 	}
 }
 
 func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	defer cancel() // lifecycle cleanup
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -41,7 +42,7 @@ func run() error {
 	} else {
 		logger, _ = zap.NewProduction()
 	}
-	defer logger.Sync()
+	defer logger.Sync() // lifecycle cleanup
 
 	logger.Info("starting kovra",
 		zap.String("env", cfg.Server.Env),
@@ -59,28 +60,16 @@ func run() error {
 	// Connect to TigerBeetle
 	ledgerClient, err := ledger.NewClient(cfg.TigerBeetle)
 	if err != nil {
-		logger.Warn("failed to connect to TigerBeetle, running without ledger",
-			zap.Error(err),
-		)
-		// Continue without TigerBeetle - some endpoints will fail
-	} else {
-		defer ledgerClient.Close()
-		logger.Info("connected to TigerBeetle",
-			zap.Strings("addresses", cfg.TigerBeetle.Addresses),
-		)
+		return fmt.Errorf("ledger unavailable: %w", err)
 	}
+	defer ledgerClient.Close()
 
 	// Connect to Redis
 	cacheClient, err := cache.NewClient(ctx, cfg.Redis.URL)
 	if err != nil {
-		logger.Warn("failed to connect to Redis, running without cache",
-			zap.Error(err),
-		)
-		// Continue without Redis - rate limiting and caching disabled
-	} else {
-		defer cacheClient.Close()
-		logger.Info("connected to Redis")
+		return fmt.Errorf("redis unavailable: %w", err)
 	}
+	defer cacheClient.Close()
 
 	// Create and start HTTP server
 	srv := server.New(server.Config{
@@ -92,9 +81,19 @@ func run() error {
 	})
 
 	// Start server in goroutine
+	// Start HTTP server in a separate goroutine because ListenAndServe() is BLOCKING.
+	// If run directly, it would halt the main control flow and prevent graceful shutdown.
 	errChan := make(chan error, 1)
+	// Buffered channel (size=1) to avoid goroutine deadlock
+	// if the server fails before the receiver is ready.
+
 	go func() {
+		// Start the server; this call blocks until the server stops or fails.
+		// Only unexpected errors are returned (http.ErrServerClosed is ignored).
 		if err := srv.Start(); err != nil {
+			// Propagate server startup/runtime errors back to the main goroutine.
+			// This allows the main select loop to handle server failures
+			// the same way as OS shutdown signals.
 			errChan <- err
 		}
 	}()
