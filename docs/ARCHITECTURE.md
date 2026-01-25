@@ -291,11 +291,16 @@ sequenceDiagram
 
     EU-->>TS: EUR received
 
-    TS->>TB: Execute FX conversion (EUR → IDR)
+    Note over TS,TB: FX = Two Coordinated Chains (cross-ledger constraint)
 
-    Note over TB: Atomic: Debit EUR, Credit IDR
+    TS->>TB: Source Chain (EUR): WALLET → FX_POSITION
 
-    TB-->>TS: Conversion complete
+    TB-->>TS: EUR debit confirmed
+
+    TS->>TB: Dest Chain (IDR): FX_POSITION → SETTLEMENT
+
+    TB-->>TS: IDR credit confirmed
+
 
     TS->>ID: Payout IDR via BI-FAST
 
@@ -344,9 +349,16 @@ sequenceDiagram
 
     TB-->>TS: Debit confirmed
 
-    TS->>TB: FX conversion (IDR → EUR)
+    Note over TS,TB: FX = Two Coordinated Chains
 
-    TB-->>TS: Conversion complete
+    TS->>TB: Source Chain (IDR): WALLET → FX_POSITION
+
+    TB-->>TS: IDR debit confirmed
+
+    TS->>TB: Dest Chain (EUR): FX_POSITION → SETTLEMENT
+
+    TB-->>TS: EUR credit confirmed
+
 
     TS->>EU: Payout EUR via SEPA Instant
 
@@ -409,20 +421,22 @@ SCENARIO: Indonesian exporter receives €10,000 from EU buyer
 │   Debit:  PENDING_INBOUND_EUR       €80                             │
 │   Credit: FEE_REVENUE_EUR           €80                             │
 ├─────────────────────────────────────────────────────────────────────┤
-│ Step 3: FX conversion (atomic linked transfer)                      │
+│ Step 3: FX Source Chain (EUR Ledger) - Platform acquires EUR                      │
 │   Debit:  PENDING_INBOUND_EUR       €9,920                          │
-│   Credit: FX_SETTLEMENT_EUR         €9,920                          │
-│   ---linked---                                                      │
-│   Debit:  FX_SETTLEMENT_IDR         IDR 171,120,000                 │
+│   Credit: FX_POSITION_EUR         €9,920                          │
+│   --- END SOURCE CHAIN (EUR) ---
+├─────────────────────────────────────────────────────────────────────┤
+│ Step 4: FX Dest Chain (IDR Ledger) - Platform pays out IDR         │                                                      │
+│   Debit:  FX_POSITION_IDR         IDR 171,120,000                 │
 │   Credit: PENDING_OUTBOUND_IDR      IDR 171,120,000                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│ Step 4: Payout to beneficiary (BI-FAST)                             │
+│ Step 5: Payout to beneficiary (BI-FAST)                             │
 │   Debit:  PENDING_OUTBOUND_IDR      IDR 171,120,000                 │
 │   Credit: REGIONAL_SETTLEMENT_ID    IDR 171,120,000                 │
 └─────────────────────────────────────────────────────────────────────┘
 
-All transfers use `flags.linked` for atomicity.
-If any step fails, entire chain rolls back.
+Source & Dest chains use `flags.linked` for atomicity within each ledger.
+Cross-ledger coordination: if Dest chain fails, compensate Source chain.
 ```
 
 ## Service Responsibilities
@@ -488,9 +502,9 @@ If any step fails, entire chain rolls back.
 │   ┌──────────────────────────────────────────────────────┐          │
 │   │           ATOMIC_SETTLEMENT                          │          │
 │   │                                                      │          │
-│   │  This is ONE database transaction + TigerBeetle      │          │
-│   │  linked transfer chain. Either ALL succeed or        │          │
-│   │  ALL rollback automatically.                         │          │
+│   │  For same-currency: ONE TigerBeetle linked chain.      │          │
+│   │  For cross-currency FX: TWO coordinated chains        │          │
+│   │  (one per ledger) with app-level coordination.                         │          │
 │   │                                                      │          │
 │   │  Internal phases (happen in <100ms):                 │          │
 │   │                                                      │          │
@@ -505,7 +519,7 @@ If any step fails, entire chain rolls back.
 │   │  ├─ PEP check                                        │          │
 │   │  └─ Velocity/amount limits                           │          │
 │   │                                                      │          │
-│   │  Phase 3: TigerBeetle Linked Transfers               │          │
+│   │  Phase 3: TigerBeetle Chains (FX = 2 chains)               │          │
 │   │  ┌───────────────────────────────────────┐           │          │
 │   │  │ Transfer 1 (LINKED flag set):         │           │          │
 │   │  │ Debit:  TENANT_WALLET_EUR   €10,000   │           │          │
@@ -517,10 +531,11 @@ If any step fails, entire chain rolls back.
 │   │  ├───────────────────────────────────────┤           │          │
 │   │  │ Transfer 3 (LINKED flag set):         │           │          │
 │   │  │ Debit:  PENDING_INBOUND_EUR  €9,920   │           │          │
-│   │  │ Credit: FX_SETTLEMENT_EUR    €9,920   │           │          │
+│   │  │ Credit: FX_POSITION_EUR    €9,920   │           │          │
 │   │  ├───────────────────────────────────────┤           │          │
-│   │  │ Transfer 4 (LINKED flag set):         │           │          │
-│   │  │ Debit:  FX_SETTLEMENT_IDR  171.12M    │           │          │
+│   │  │ --- DEST CHAIN (IDR Ledger) ---        │
+│   │  │ Transfer 4:         │           │          │
+│   │  │ Debit:  FX_POSITION_IDR  171.12M    │           │          │
 │   │  │ Credit: PENDING_OUTBOUND_IDR 171.12M  │           │          │
 │   │  ├───────────────────────────────────────┤           │          │
 │   │  │ Transfer 5 (LINKED flag cleared):     │           │          │
@@ -555,9 +570,9 @@ If any step fails, entire chain rolls back.
 ```
 
 **Design Decision:**
-- Direct atomic settlement via TigerBeetle linked transfers
+- Same-currency: atomic via single linked chain
 - No intermediate states (FX_LOCKED, PROCESSING, CLEARING)
-- Either ALL succeed or ALL rollback
+- Cross-currency FX: two chains with compensation on failure
 - Suitable for instant settlement rails (SEPA Instant, BI-FAST)
 
 ## Regional Adapter Details
@@ -882,7 +897,7 @@ Demo: "Create tenant → Fund EUR wallet → Transfer EUR →
 - [ ] Wallet service (Hold, Release, Capture)
 - [ ] Balance cache sync
 
-Demo: "EUR → IDR transfer → 5-step linked chain → 
+Demo: "EUR → IDR transfer → two coordinated chains (EUR + IDR) → 
        Atomic rollback on failure → Show TigerBeetle logs"
 ```
 
