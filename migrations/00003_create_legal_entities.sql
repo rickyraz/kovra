@@ -25,7 +25,6 @@ CREATE TABLE legal_entities (
     supported_currencies    CHAR(3)[] NOT NULL,
     supported_rails         rail_enum[] NOT NULL,
     -- Timestamps
-
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

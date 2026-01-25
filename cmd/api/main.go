@@ -25,6 +25,9 @@ func main() {
 	}
 }
 
+// run initializes all dependencies, starts the HTTP server,
+// blocks until shutdown signal or server failure, and
+// performs graceful cleanup before exiting.
 func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel() // lifecycle cleanup

@@ -1,11 +1,21 @@
 package ledger
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
 	tbtypes "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
 )
 
-// Transfer represents a TigerBeetle transfer.
+// Transfer is the smallest immutable unit of value movement in the ledger.
+//
+// It represents a single double-entry accounting operation where value is
+// atomically debited from one account and credited to another.
+// Transfers must always balance and are executed within a specific ledger
+// (currency/book) and business context (Code).
+//
+// UserData fields are reserved for correlation, idempotency, and tracing.
+// They must not affect accounting semantics.
 type Transfer struct {
 	ID            uuid.UUID
 	DebitAccount  AccountID
@@ -20,15 +30,21 @@ type Transfer struct {
 }
 
 // NewTransfer creates a new transfer.
-func NewTransfer(debit, credit AccountID, amount uint64, ledger uint32, code uint16) Transfer {
+func NewTransfer(debit, credit AccountID, amount uint64, ledger uint32, code uint16) (Transfer, error) {
+	id, err := uuid.NewV7()
+
+	if err != nil {
+		return Transfer{}, fmt.Errorf("generate transfer id: %w", err)
+	}
+
 	return Transfer{
-		ID:            uuid.New(),
+		ID:            id,
 		DebitAccount:  debit,
 		CreditAccount: credit,
 		Amount:        amount,
 		Ledger:        ledger,
 		Code:          code,
-	}
+	}, nil
 }
 
 // WithID sets a specific transfer ID.
@@ -68,6 +84,9 @@ func (t Transfer) toTigerBeetle() tbtypes.Transfer {
 	// Convert UUID to bytes and then to Uint128
 	idBytes := [16]byte(t.ID)
 
+	// Alternative : Langsung slice, tanpa intermediate variable
+	// tbtypes.BytesToUint128(t.ID[:])
+
 	// Build transfer flags struct
 	flags := tbtypes.TransferFlags{
 		Linked:              t.Flags&TransferFlagLinked != 0,
@@ -103,9 +122,13 @@ func NewTransferBuilder() *TransferBuilder {
 }
 
 // Add adds a transfer to the chain.
-func (b *TransferBuilder) Add(debit, credit AccountID, amount uint64, ledger uint32, code uint16) *TransferBuilder {
-	b.transfers = append(b.transfers, NewTransfer(debit, credit, amount, ledger, code))
-	return b
+func (b *TransferBuilder) Add(debit, credit AccountID, amount uint64, ledger uint32, code uint16) (*TransferBuilder, error) {
+	transfer, err := NewTransfer(debit, credit, amount, ledger, code)
+	if err != nil {
+		return nil, err
+	}
+	b.transfers = append(b.transfers, transfer)
+	return b, nil
 }
 
 // AddTransfer adds a pre-built transfer to the chain.
@@ -137,16 +160,44 @@ func (b *TransferBuilder) BuildLinked() []Transfer {
 	return result
 }
 
-// FXTransferChain creates a 5-step FX transfer chain for cross-currency transfers.
-// This is the atomic EUR → IDR (or similar) conversion flow.
+// FXTransferPair represents a pair of transfer chains for cross-currency FX operations.
+// TigerBeetle requires all accounts in a transfer to be in the same ledger,
+// so FX conversions must be split into two separate chains coordinated at application level.
+type FXTransferPair struct {
+	// SourceChain debits source currency (e.g., EUR)
+	// Executes in source currency ledger
+	SourceChain []Transfer
+
+	// DestinationChain credits destination currency (e.g., IDR)
+	// Executes in destination currency ledger
+	DestinationChain []Transfer
+
+	// CorrelationID links both chains for reconciliation (stored in UserData128)
+	CorrelationID [16]byte
+}
+
+// FXTransferChains creates two separate transfer chains for cross-currency FX operations.
 //
-// Steps:
-// 1. TENANT_WALLET_SRC → PENDING_OUTBOUND_SRC (debit source wallet)
-// 2. PENDING_OUTBOUND_SRC → FX_SETTLEMENT_SRC (move to FX clearing)
-// 3. FX_SETTLEMENT_SRC → FX_SETTLEMENT_DST (FX conversion)
-// 4. FX_SETTLEMENT_DST → FEE_REVENUE_DST (fee deduction)
-// 5. FX_SETTLEMENT_DST → REGIONAL_SETTLEMENT_DST (final settlement)
-func FXTransferChain(
+// TigerBeetle Constraint: Accounts in a transfer MUST be in the same ledger.
+// Therefore, cross-currency FX requires two coordinated chains:
+//
+// Source Chain (srcCurrency ledger):
+//  1. TENANT_WALLET → PENDING_OUTBOUND (hold source funds)
+//  2. PENDING_OUTBOUND → FX_POSITION (platform acquires source currency)
+//
+// Destination Chain (dstCurrency ledger):
+//  1. FX_POSITION → FEE_REVENUE (fee deduction, if any)
+//  2. FX_POSITION → REGIONAL_SETTLEMENT (payout to destination)
+//
+// The FX_POSITION accounts track the platform's currency exposure:
+//   - Credit to FX_POSITION_SRC = platform receives source currency
+//   - Debit from FX_POSITION_DST = platform pays out destination currency
+//
+// Application-level coordination required:
+//   - Both chains must succeed, or both must be compensated
+//   - Use CorrelationID to link chains in PostgreSQL for reconciliation
+//   - FX rate and conversion details are stored in PostgreSQL, not TigerBeetle
+func FXTransferChains(
 	tenantID uint64,
 	srcCurrency Currency,
 	dstCurrency Currency,
@@ -154,55 +205,86 @@ func FXTransferChain(
 	dstAmount uint64,
 	feeAmount uint64,
 	transferCode uint16,
-) []Transfer {
-	builder := NewTransferBuilder()
+) (FXTransferPair, error) {
+	// Generate correlation ID to link both chains
+	correlationUUID, err := uuid.NewV7()
+	if err != nil {
+		return FXTransferPair{}, fmt.Errorf("generate correlation id: %w", err)
+	}
+	correlationID := [16]byte(correlationUUID)
 
-	// Source currency accounts
+	// === SOURCE CHAIN (srcCurrency ledger) ===
+	srcBuilder := NewTransferBuilder()
+
 	srcWallet := NewAccountID(tenantID, AccountTypeTenantWallet, srcCurrency)
 	srcPendingOut := NewAccountID(SystemTenantID, AccountTypePendingOutbound, srcCurrency)
-	srcFXSettlement := NewAccountID(SystemTenantID, AccountTypeFXSettlement, srcCurrency)
-
-	// Destination currency accounts
-	dstFXSettlement := NewAccountID(SystemTenantID, AccountTypeFXSettlement, dstCurrency)
-	dstFeeRevenue := NewAccountID(SystemTenantID, AccountTypeFeeRevenue, dstCurrency)
-	dstRegionalSettlement := NewAccountID(SystemTenantID, AccountTypeRegionalSettlement, dstCurrency)
-
+	srcFXPosition := NewAccountID(SystemTenantID, AccountTypeFXSettlement, srcCurrency)
 	srcLedger := uint32(srcCurrency)
-	dstLedger := uint32(dstCurrency)
 
-	// Step 1: Debit tenant wallet → pending outbound
-	builder.Add(srcWallet, srcPendingOut, srcAmount, srcLedger, transferCode)
-
-	// Step 2: Pending outbound → FX settlement (source currency)
-	builder.Add(srcPendingOut, srcFXSettlement, srcAmount, srcLedger, transferCode)
-
-	// Step 3: FX settlement source → FX settlement dest (cross-currency)
-	// Note: This requires accounts in different ledgers, handled specially
-	builder.Add(srcFXSettlement, dstFXSettlement, dstAmount, dstLedger, transferCode)
-
-	// Step 4: FX settlement → fee revenue (fee deduction)
-	if feeAmount > 0 {
-		builder.Add(dstFXSettlement, dstFeeRevenue, feeAmount, dstLedger, transferCode)
+	// Step 1: Debit tenant wallet → pending outbound (hold)
+	if _, err := srcBuilder.Add(srcWallet, srcPendingOut, srcAmount, srcLedger, transferCode); err != nil {
+		return FXTransferPair{}, fmt.Errorf("add source step 1: %w", err)
 	}
 
-	// Step 5: FX settlement → regional settlement (final payout)
-	finalAmount := dstAmount - feeAmount
-	builder.Add(dstFXSettlement, dstRegionalSettlement, finalAmount, dstLedger, transferCode)
+	// Step 2: Pending outbound → FX position (platform acquires source currency)
+	if _, err := srcBuilder.Add(srcPendingOut, srcFXPosition, srcAmount, srcLedger, transferCode); err != nil {
+		return FXTransferPair{}, fmt.Errorf("add source step 2: %w", err)
+	}
 
-	return builder.BuildLinked()
+	// Set correlation ID on source chain
+	srcChain := srcBuilder.BuildLinked()
+	for i := range srcChain {
+		srcChain[i].UserData128 = correlationID
+	}
+
+	// === DESTINATION CHAIN (dstCurrency ledger) ===
+	dstBuilder := NewTransferBuilder()
+
+	dstFXPosition := NewAccountID(SystemTenantID, AccountTypeFXSettlement, dstCurrency)
+	dstFeeRevenue := NewAccountID(SystemTenantID, AccountTypeFeeRevenue, dstCurrency)
+	dstRegionalSettlement := NewAccountID(SystemTenantID, AccountTypeRegionalSettlement, dstCurrency)
+	dstLedger := uint32(dstCurrency)
+
+	// Step 1: FX position → fee revenue (fee deduction)
+	if feeAmount > 0 {
+		if _, err := dstBuilder.Add(dstFXPosition, dstFeeRevenue, feeAmount, dstLedger, transferCode); err != nil {
+			return FXTransferPair{}, fmt.Errorf("add dest fee step: %w", err)
+		}
+	}
+
+	// Step 2: FX position → regional settlement (payout)
+	finalAmount := dstAmount - feeAmount
+	if _, err := dstBuilder.Add(dstFXPosition, dstRegionalSettlement, finalAmount, dstLedger, transferCode); err != nil {
+		return FXTransferPair{}, fmt.Errorf("add dest payout step: %w", err)
+	}
+
+	// Set correlation ID on destination chain
+	dstChain := dstBuilder.BuildLinked()
+	for i := range dstChain {
+		dstChain[i].UserData128 = correlationID
+	}
+
+	return FXTransferPair{
+		SourceChain:      srcChain,
+		DestinationChain: dstChain,
+		CorrelationID:    correlationID,
+	}, nil
 }
 
 // SimpleTransferChain creates a simple same-currency transfer chain.
+// All transfers execute atomically in the same ledger via TigerBeetle linked transfers.
+//
 // Steps:
-// 1. TENANT_WALLET → PENDING_OUTBOUND (debit source)
-// 2. PENDING_OUTBOUND → REGIONAL_SETTLEMENT (settlement)
+//  1. TENANT_WALLET → PENDING_OUTBOUND (debit source wallet)
+//  2. PENDING_OUTBOUND → FEE_REVENUE (fee deduction, if feeAmount > 0)
+//  3. PENDING_OUTBOUND → REGIONAL_SETTLEMENT (final payout)
 func SimpleTransferChain(
 	tenantID uint64,
 	currency Currency,
 	amount uint64,
 	feeAmount uint64,
 	transferCode uint16,
-) []Transfer {
+) ([]Transfer, error) {
 	builder := NewTransferBuilder()
 
 	wallet := NewAccountID(tenantID, AccountTypeTenantWallet, currency)
@@ -212,17 +294,23 @@ func SimpleTransferChain(
 
 	ledger := uint32(currency)
 
-	// Step 1: Debit tenant wallet
-	builder.Add(wallet, pendingOut, amount, ledger, transferCode)
+	// Step 1: Debit tenant wallet → pending outbound
+	if _, err := builder.Add(wallet, pendingOut, amount, ledger, transferCode); err != nil {
+		return nil, fmt.Errorf("add debit step: %w", err)
+	}
 
 	// Step 2: Fee deduction (if any)
 	if feeAmount > 0 {
-		builder.Add(pendingOut, feeRevenue, feeAmount, ledger, transferCode)
+		if _, err := builder.Add(pendingOut, feeRevenue, feeAmount, ledger, transferCode); err != nil {
+			return nil, fmt.Errorf("add fee step: %w", err)
+		}
 	}
 
 	// Step 3: Final settlement
 	finalAmount := amount - feeAmount
-	builder.Add(pendingOut, regionalSettlement, finalAmount, ledger, transferCode)
+	if _, err := builder.Add(pendingOut, regionalSettlement, finalAmount, ledger, transferCode); err != nil {
+		return nil, fmt.Errorf("add settlement step: %w", err)
+	}
 
-	return builder.BuildLinked()
+	return builder.BuildLinked(), nil
 }

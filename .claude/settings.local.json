@@ -5,7 +5,8 @@
       "Bash(go doc:*)",
       "Bash(go mod tidy:*)",
       "Bash(go build:*)",
-      "Bash(sqlc generate:*)"
+      "Bash(sqlc generate:*)",
+      "Bash(go test:*)"
     ]
   }
 }

@@ -2,7 +2,6 @@
 -- +goose StatementBegin
 
 -- Additional performance indexes for common query patterns
-
 -- Composite indexes for tenant queries
 CREATE INDEX idx_transfers_tenant_updated ON transfers(tenant_id, updated_at DESC);
 

@@ -29,7 +29,7 @@ $$ LANGUAGE plpgsql;
 -- Transfers table with geo-partitioning by compliance_region
 -- compliance_region is derived from currencies and determines data residency
 CREATE TABLE transfers (
-    id                      UUID NOT NULL DEFAULT uuidv7(),
+    id                      UUID NOT NULL,
     tenant_id               UUID NOT NULL,
     -- Legal entity routing
     source_legal_entity_id  UUID,

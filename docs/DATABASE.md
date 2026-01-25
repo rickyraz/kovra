@@ -89,10 +89,14 @@ B2B cross-border payment rails platform dengan data terdistribusi di PostgreSQL 
 |---|---|---|---|---|
 |0x01|TENANT_WALLET|FBO sub-ledger|Tenant (segregated)|Client funds per currency|
 |0x02|FEE_REVENUE|Kovra operational|Kovra|Collected fees|
-|0x03|FX_SETTLEMENT|Internal clearing|System|Atomic FX conversion bridge|
+|0x03|FX_SETTLEMENT|FX Position/Exposure|System|Platform's currency position for FX operations|
 |0x04|PENDING_INBOUND|Transit|System|Funds being collected|
 |0x05|PENDING_OUTBOUND|Transit|System|Funds being disbursed|
 |0x06|REGIONAL_SETTLEMENT|Nostro accounts|Kovra|Pre-funded settlement liquidity|
+
+> **⚠️ TigerBeetle Constraint:** All accounts in a single transfer MUST be in the same ledger.
+> Cross-currency FX requires two separate transfer chains (one per ledger) coordinated at application level.
+> See "Cross-Currency FX Transfer" diagram below for the correct pattern.
 
 ### Account ID Structure (128-bit)
 
@@ -133,11 +137,14 @@ Examples:
          │ 1:N                                            │
          ▼                                                │
 ┌──────────────────┐       ┌────────────────────────┐     │
-│    tenants       │──────►│ tenant_tax_identifiers │     │
-│                  │  1:N  │                        │     │
-│ • legal_entity_id│       │ • npwp, eu_vat, etc    │     │
-│ • tenant_kind    │       └────────────────────────┘     │
-│ • parent_id      │                                      │
+│    tenants       │──────►│ tenant_capabilities    │     │
+│                  │  1:1  │                        │     │
+│ • legal_entity_id│       │ • can_have_children    │     │
+│ • tenant_kind    │       │ • can_netting          │     │
+│ • parent_id      │       │ • can_batch_transfer   │     │
+│ • api_key_hash   │       │ • fees_responsibility  │     │
+│ • webhook_url    │       │ • dashboard_access     │     │
+│ • metadata       │       └────────────────────────┘     │
 └────────┬─────────┘                                      │
          │                                                │
     ┌────┴────┬───────────────────┐                       │
@@ -248,35 +255,95 @@ SELECT compliance_region, COUNT(*) FROM transfers GROUP BY compliance_region;
 
 ### Transfer Settlement Flow (TigerBeetle)
 
+#### Same-Currency Transfer (Atomic)
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                     ATOMIC TRANSFER SETTLEMENT                           │
+│                SAME-CURRENCY TRANSFER (Single Ledger)                    │
 ├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  All steps execute atomically via TigerBeetle linked transfers           │
+│  Ledger: EUR (978)                                                       │
 │                                                                          │
 │  Step 1: Debit Source                                                    │
 │  ┌─────────────────────┐                                                 │
-│  │ TENANT_WALLET (EUR) │ ──── debit ────►  PENDING_OUTBOUND              │
+│  │ TENANT_WALLET (EUR) │ ──── debit ────►  PENDING_OUTBOUND (EUR)        │
 │  └─────────────────────┘                                                 │
 │                                                                          │
-│  Step 2: FX Conversion (if cross-currency)                               │
+│  Step 2: Fee Collection (if fee > 0)                                     │
 │  ┌─────────────────────┐                                                 │
-│  │  PENDING_OUTBOUND   │ ──── convert ──►  FX_SETTLEMENT                 │
-│  │       (EUR)         │                       (EUR→IDR)                 │
+│  │ PENDING_OUTBOUND    │ ──── fee ──────►  FEE_REVENUE (EUR)             │
 │  └─────────────────────┘                                                 │
 │                                                                          │
-│  Step 3: Fee Collection                                                  │
+│  Step 3: Settlement                                                      │
 │  ┌─────────────────────┐                                                 │
-│  │   FX_SETTLEMENT     │ ──── fee ──────►  FEE_REVENUE                   │
+│  │ PENDING_OUTBOUND    │ ──── payout ───►  REGIONAL_SETTLEMENT (EUR)     │
 │  └─────────────────────┘                                                 │
 │                                                                          │
-│  Step 4: Credit Destination                                              │
-│  ┌─────────────────────┐                                                 │
-│  │   FX_SETTLEMENT     │ ──── credit ───►  TENANT_WALLET (IDR)           │
-│  └─────────────────────┘                   or REGIONAL_SETTLEMENT        │
-│                                                                          │
-│  All steps execute atomically via TigerBeetle linked transfers           │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+#### Cross-Currency FX Transfer (Two Coordinated Chains)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│              CROSS-CURRENCY FX TRANSFER (EUR → IDR)                      │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ⚠️  TigerBeetle Constraint: Accounts in a transfer MUST be same ledger  │
+│  → FX requires TWO separate chains coordinated at application level      │
+│  → CorrelationID (UserData128) links both chains for reconciliation      │
+│                                                                          │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│  SOURCE CHAIN (EUR Ledger = 978)                                         │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│                                                                          │
+│  Step 1: Hold source funds                                               │
+│  ┌─────────────────────┐                                                 │
+│  │ TENANT_WALLET (EUR) │ ──── debit ────►  PENDING_OUTBOUND (EUR)        │
+│  └─────────────────────┘                                                 │
+│                                                                          │
+│  Step 2: Platform acquires EUR                                           │
+│  ┌─────────────────────┐                                                 │
+│  │ PENDING_OUTBOUND    │ ──── credit ───►  FX_POSITION (EUR)             │
+│  └─────────────────────┘                   (platform's EUR exposure)     │
+│                                                                          │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│  DESTINATION CHAIN (IDR Ledger = 360)                                    │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│                                                                          │
+│  Step 1: Fee deduction (if fee > 0)                                      │
+│  ┌─────────────────────┐                                                 │
+│  │ FX_POSITION (IDR)   │ ──── fee ──────►  FEE_REVENUE (IDR)             │
+│  └─────────────────────┘                                                 │
+│                                                                          │
+│  Step 2: Payout                                                          │
+│  ┌─────────────────────┐                                                 │
+│  │ FX_POSITION (IDR)   │ ──── payout ───►  REGIONAL_SETTLEMENT (IDR)     │
+│  └─────────────────────┘                                                 │
+│                                                                          │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│  APPLICATION COORDINATION                                                │
+│  ═══════════════════════════════════════════════════════════════════════ │
+│                                                                          │
+│  1. Execute Source Chain (atomic within EUR ledger)                      │
+│  2. Execute Destination Chain (atomic within IDR ledger)                 │
+│  3. If either fails → compensating transaction required                  │
+│  4. FX rate & conversion stored in PostgreSQL transfers table            │
+│  5. CorrelationID links chains for audit/reconciliation                  │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**FX_POSITION Account Semantics:**
+
+| Operation | Meaning |
+|-----------|---------|
+| Credit FX_POSITION_EUR | Platform receives EUR from user |
+| Debit FX_POSITION_IDR | Platform pays out IDR to settlement |
+
+The FX_POSITION accounts track platform's currency exposure. Treasury operations
+(hedging, rebalancing) happen outside TigerBeetle and reconcile periodically.
 
 ---
 
@@ -285,21 +352,21 @@ SELECT compliance_region, COUNT(*) FROM transfers GROUP BY compliance_region;
 ### Enums
 
 ```sql
-CREATE TYPE tenant_kind_enum AS ENUM ('platform', 'seller', 'direct');
+-- Tenant classification:
+-- platform   → punya sub-tenant (Aggregator / super-merchant / e-commerce platform)
+-- connected  → sub-merchant di bawah platform (sub-tenant)
+-- direct     → B2B langsung (corporate/exporter standalone)
+-- internal   → demo/sandbox/testing
+CREATE TYPE tenant_kind_enum AS ENUM ('platform', 'connected', 'direct', 'internal');
 CREATE TYPE tenant_status_enum AS ENUM ('pending_kyc', 'active', 'suspended', 'closed');
 CREATE TYPE kyc_level_enum AS ENUM ('basic', 'standard', 'enhanced');
-CREATE TYPE license_type_enum AS ENUM ('EMI', 'PI', 'PJP');
-CREATE TYPE tax_id_type_enum AS ENUM (
-    'npwp', 'nik', 'nib',           -- Indonesia
-    'eu_vat', 'eu_eori', 'lei',     -- EU
-    'gb_vat', 'gb_eori', 'uk_company_number'  -- UK
-);
+CREATE TYPE license_type_enum AS ENUM ('EMI', 'PI', 'BANK');
 CREATE TYPE transfer_status_enum AS ENUM (
-    'created', 'validating', 'rejected', 'processing', 
+    'created', 'validating', 'rejected', 'processing',
     'completed', 'rolled_back', 'cancelled'
 );
 CREATE TYPE rail_enum AS ENUM (
-    'SEPA_INSTANT', 'SEPA_SCT', 'FPS', 'CHAPS', 
+    'SEPA_INSTANT', 'SEPA_SCT', 'FPS', 'CHAPS',
     'BI_FAST', 'RTGS', 'SWIFT'
 );
 ```
@@ -334,7 +401,7 @@ CREATE INDEX idx_legal_entities_jurisdiction ON legal_entities(jurisdiction);
 
 ```sql
 CREATE TABLE tenants (
-    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
+    id                      UUID PRIMARY KEY NOT NULL,  -- App-generated UUIDv7
     display_name            VARCHAR(100) NOT NULL,
     legal_name              VARCHAR(200) NOT NULL,
     country                 CHAR(2) NOT NULL,
@@ -345,13 +412,42 @@ CREATE TABLE tenants (
     kyc_level               kyc_level_enum NOT NULL DEFAULT 'basic',
     netting_enabled         BOOLEAN NOT NULL DEFAULT false,
     netting_window_minutes  INTEGER NOT NULL DEFAULT 5,
-    ,
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    -- API access
+    api_key_hash            VARCHAR(64),
+    webhook_url             VARCHAR(500),
+    webhook_secret_hash     VARCHAR(64),
+    -- Metadata
+    metadata                JSONB NOT NULL DEFAULT '{}',
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Connected tenants must have parent
+    CONSTRAINT chk_connected_parent CHECK (
+        tenant_kind != 'connected' OR parent_tenant_id IS NOT NULL
+    )
 );
 
 CREATE INDEX idx_tenants_legal_entity ON tenants(legal_entity_id);
 CREATE INDEX idx_tenants_parent ON tenants(parent_tenant_id) WHERE parent_tenant_id IS NOT NULL;
 CREATE INDEX idx_tenants_status ON tenants(tenant_status) WHERE tenant_status = 'active';
+CREATE INDEX idx_tenants_kind ON tenants(tenant_kind);
+CREATE INDEX idx_tenants_country ON tenants(country);
+```
+
+### Tenant Capabilities
+
+```sql
+-- Capability flags per tenant (1:1 with tenants)
+CREATE TABLE tenant_capabilities (
+    tenant_id           UUID PRIMARY KEY REFERENCES tenants(id),
+    can_have_children   BOOLEAN NOT NULL DEFAULT false,  -- Platform-only
+    can_netting         BOOLEAN NOT NULL DEFAULT false,
+    can_batch_transfer  BOOLEAN NOT NULL DEFAULT false,
+    fees_responsibility TEXT NOT NULL DEFAULT 'platform',  -- 'platform' | 'tenant'
+    kyc_tier            TEXT NOT NULL DEFAULT 'basic',     -- 'basic' | 'standard' | 'enhanced'
+    dashboard_access    TEXT NOT NULL DEFAULT 'none',      -- 'full' | 'limited' | 'none'
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 ```
 
 ### Pricing & Limit Policies
@@ -360,23 +456,33 @@ CREATE INDEX idx_tenants_status ON tenants(tenant_status) WHERE tenant_status = 
 -- PG 18 Temporal Constraint (no overlapping periods)
 CREATE TABLE pricing_policies (
     id                      UUID PRIMARY KEY DEFAULT uuidv7(),
-    tenant_id               UUID NOT NULL REFERENCES tenants(id),
+    tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     fx_margin_bps           INTEGER NOT NULL DEFAULT 150,
-    fee_structure           JSONB NOT NULL DEFAULT '{"transfer_fee_flat": 0}',
+    fee_structure           JSONB NOT NULL DEFAULT '{"transfer_fee_flat": 0, "transfer_fee_percent": 0}',
     corridor_overrides      JSONB NOT NULL DEFAULT '{}',
-    valid_period            TSTZRANGE NOT NULL,
-    EXCLUDE USING gist (tenant_id WITH =, valid_period WITH &&),
-    
+    valid_from              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_until             TIMESTAMPTZ,
+    CONSTRAINT pricing_no_overlap EXCLUDE USING gist (
+        tenant_id WITH =,
+        tstzrange(valid_from, COALESCE(valid_until, 'infinity'::timestamptz)) WITH &&
+    )
 );
 
 CREATE TABLE limit_policies (
     id                      UUID PRIMARY KEY DEFAULT uuidv7(),
-    tenant_id               UUID NOT NULL REFERENCES tenants(id),
+    tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    -- Volume limits (in USD equivalent)
     daily_limit_usd         NUMERIC(15,2) NOT NULL DEFAULT 10000,
+    monthly_limit_usd       NUMERIC(15,2) NOT NULL DEFAULT 100000,
     per_transfer_limit_usd  NUMERIC(15,2) NOT NULL DEFAULT 50000,
+    -- Rate limits
     rate_limit_rpm          INTEGER NOT NULL DEFAULT 100,
+    rate_limit_burst        INTEGER NOT NULL DEFAULT 20,
+    -- Batch limits
+    max_batch_size          INTEGER NOT NULL DEFAULT 100,
+    max_batch_amount_usd    NUMERIC(15,2) NOT NULL DEFAULT 100000,
     effective_from          DATE NOT NULL DEFAULT CURRENT_DATE,
-    ,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_tenant_limit UNIQUE (tenant_id)
 );
 ```
@@ -385,14 +491,14 @@ CREATE TABLE limit_policies (
 
 ```sql
 CREATE TABLE wallets (
-    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
-    tenant_id               UUID NOT NULL REFERENCES tenants(id),
+    id                      UUID PRIMARY KEY NOT NULL,  -- App-generated UUIDv7
+    tenant_id               UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     currency                CHAR(3) NOT NULL,
     tb_account_id           NUMERIC(39,0) NOT NULL UNIQUE,
     cached_balance          NUMERIC(20,2) NOT NULL DEFAULT 0,
+    cached_pending          NUMERIC(20,2) NOT NULL DEFAULT 0,
     cached_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status                  VARCHAR(20) NOT NULL DEFAULT 'active',
-    ,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_tenant_currency UNIQUE (tenant_id, currency)
 );
@@ -401,22 +507,35 @@ CREATE TABLE wallets (
 ### Transfers (Geo-Partitioned)
 
 ```sql
+-- Compliance region computed by trigger (not GENERATED)
+CREATE OR REPLACE FUNCTION compute_compliance_region(from_curr CHAR(3), to_curr CHAR(3))
+RETURNS TEXT AS $$
+BEGIN
+    IF from_curr = 'IDR' OR to_curr = 'IDR' THEN RETURN 'ID';
+    ELSIF from_curr IN ('EUR', 'SEK', 'DKK') OR to_curr IN ('EUR', 'SEK', 'DKK') THEN RETURN 'EU';
+    ELSIF from_curr = 'GBP' OR to_curr = 'GBP' THEN RETURN 'UK';
+    ELSE RETURN 'UNKNOWN';
+    END IF;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE TABLE transfers (
-    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
-    tenant_id               UUID NOT NULL REFERENCES tenants(id),
-    source_legal_entity_id  UUID REFERENCES legal_entities(id),
-    dest_legal_entity_id    UUID REFERENCES legal_entities(id),
+    id                      UUID NOT NULL,
+    tenant_id               UUID NOT NULL,
+    source_legal_entity_id  UUID,
+    dest_legal_entity_id    UUID,
     quote_id                UUID,
     batch_id                UUID,
-    recipient_id            UUID NOT NULL,
+    recipient_id            UUID,
     idempotency_key         VARCHAR(64),
     from_currency           CHAR(3) NOT NULL,
     to_currency             CHAR(3) NOT NULL,
     from_amount             NUMERIC(20,2) NOT NULL,
     to_amount               NUMERIC(20,2) NOT NULL,
-    fx_rate                 NUMERIC(20,8) NOT NULL,
+    fx_rate                 NUMERIC(20,8) NOT NULL DEFAULT 1.0,
     total_fee               NUMERIC(20,2) NOT NULL DEFAULT 0,
     status                  transfer_status_enum NOT NULL DEFAULT 'created',
+    failure_reason          TEXT,
     rail                    rail_enum,
     rail_reference          VARCHAR(100),
     netting_group_id        UUID,
@@ -424,32 +543,23 @@ CREATE TABLE transfers (
     tb_transfer_ids         NUMERIC(39,0)[],
     risk_score              INTEGER,
     compliance_status       VARCHAR(20) NOT NULL DEFAULT 'pending',
-    compliance_region       TEXT GENERATED ALWAYS AS (
-        CASE 
-            WHEN from_currency = 'IDR' OR to_currency = 'IDR' THEN 'ID'
-            WHEN from_currency IN ('EUR','SEK','DKK') OR to_currency IN ('EUR','SEK','DKK') THEN 'EU'
-            WHEN from_currency = 'GBP' OR to_currency = 'GBP' THEN 'UK'
-            ELSE 'UNKNOWN'
-        END
-    ) STORED,
-    ,
+    screened_at             TIMESTAMPTZ,
+    compliance_region       TEXT NOT NULL DEFAULT 'UNKNOWN',  -- Set by trigger
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at            TIMESTAMPTZ,
-    CONSTRAINT unique_idempotency UNIQUE (tenant_id, idempotency_key)
+    PRIMARY KEY (id, compliance_region),
+    CONSTRAINT unique_idempotency UNIQUE (tenant_id, idempotency_key, compliance_region)
 ) PARTITION BY LIST (compliance_region);
 
 CREATE TABLE transfers_id PARTITION OF transfers FOR VALUES IN ('ID');
 CREATE TABLE transfers_eu PARTITION OF transfers FOR VALUES IN ('EU');
 CREATE TABLE transfers_uk PARTITION OF transfers FOR VALUES IN ('UK');
+CREATE TABLE transfers_unknown PARTITION OF transfers FOR VALUES IN ('UNKNOWN');
 
--- Row-Level Security
-ALTER TABLE transfers_id ENABLE ROW LEVEL SECURITY;
-CREATE POLICY ojk_data_residency ON transfers_id USING (compliance_region = 'ID');
-
-ALTER TABLE transfers_eu ENABLE ROW LEVEL SECURITY;
-CREATE POLICY gdpr_data_residency ON transfers_eu USING (compliance_region = 'EU');
-
-ALTER TABLE transfers_uk ENABLE ROW LEVEL SECURITY;
-CREATE POLICY fca_data_residency ON transfers_uk USING (compliance_region = 'UK');
+-- Trigger to set compliance_region before insert
+CREATE TRIGGER set_compliance_region_trigger
+    BEFORE INSERT ON transfers
+    FOR EACH ROW EXECUTE FUNCTION set_compliance_region();
 ```
 
 ### Netting Groups
@@ -511,7 +621,6 @@ CREATE TABLE reconciliation_reports (
     status                  VARCHAR(20) NOT NULL DEFAULT 'pending',
     reviewed_by             VARCHAR(100),
     reviewed_at             TIMESTAMPTZ,
-    ,
     CONSTRAINT unique_recon_date UNIQUE (legal_entity_id, reconciliation_date)
 );
 ```

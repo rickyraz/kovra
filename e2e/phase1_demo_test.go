@@ -18,6 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"github.com/shopspring/decimal"
+
 	"kovra/internal/cache"
 	"kovra/internal/config"
 	"kovra/internal/handler"
@@ -484,12 +486,13 @@ func testRedisFXRateLock(t *testing.T, tc *testContext) {
 	quoteID := uuid.New().String()
 
 	// Lock an FX rate
+	// FXRateLock uses value (not pointer) - small struct, passed by value to LockFXRate
 	lock := cache.FXRateLock{
 		QuoteID:      quoteID,
 		FromCurrency: "EUR",
 		ToCurrency:   "IDR",
+		Rate:         decimal.RequireFromString("17500.50"), // decimal.Decimal is value type, not pointer
 	}
-	lock.Rate, _ = lock.Rate.SetString("17500.50")
 
 	err := tc.cacheClient.LockFXRate(ctx, lock, 30*time.Second)
 	require.NoError(t, err)
