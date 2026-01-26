@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	tbtypes "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
 )
 
 // Config holds all application configuration.
@@ -31,7 +32,7 @@ type DatabaseConfig struct {
 
 // TigerBeetleConfig holds TigerBeetle configuration.
 type TigerBeetleConfig struct {
-	ClusterID uint64
+	ClusterID tbtypes.Uint128
 	Addresses []string
 }
 
@@ -58,7 +59,7 @@ func Load() (*Config, error) {
 	cfg.Database.MaxConns = int32(getEnvInt("DATABASE_MAX_CONNS", 25))
 
 	// TigerBeetle
-	cfg.TigerBeetle.ClusterID = uint64(getEnvInt("TB_CLUSTER_ID", 0))
+	cfg.TigerBeetle.ClusterID = tbtypes.ToUint128(uint64(getEnvInt("TB_CLUSTER_ID", 0)))
 	addresses := getEnv("TB_ADDRESSES", "3000")
 	cfg.TigerBeetle.Addresses = parseAddresses(addresses)
 

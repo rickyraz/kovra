@@ -12,7 +12,7 @@ import (
 // Client wraps the TigerBeetle client with domain-specific operations.
 type Client struct {
 	tb        tb.Client
-	clusterID uint64
+	clusterID tbtypes.Uint128 // ubah dari uint64
 }
 
 // NewClient creates a new TigerBeetle client.
@@ -21,14 +21,16 @@ func NewClient(cfg config.TigerBeetleConfig) (*Client, error) {
 	addresses := make([]string, len(cfg.Addresses))
 	copy(addresses, cfg.Addresses)
 
-	client, err := tb.NewClient(tbtypes.ToUint128(cfg.ClusterID), addresses)
+	clusterID := cfg.ClusterID
+
+	client, err := tb.NewClient(clusterID, addresses)
 	if err != nil {
 		return nil, fmt.Errorf("create TigerBeetle client: %w", err)
 	}
 
 	return &Client{
 		tb:        client,
-		clusterID: cfg.ClusterID,
+		clusterID: clusterID,
 	}, nil
 }
 

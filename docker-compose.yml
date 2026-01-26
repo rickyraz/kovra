@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18.1-alpine
+    image: postgres:16-alpine
     container_name: kovra-postgres
     environment:
       POSTGRES_USER: kovra
@@ -17,7 +17,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:8.4-alpine
+    image: redis:7-alpine
     container_name: kovra-redis
     ports:
       - "6380:6379"
@@ -33,17 +33,21 @@ services:
   tigerbeetle:
     image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
     container_name: kovra-tigerbeetle
+    security_opt:
+      - seccomp=unconfined
     command: start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle
     ports:
       - "3000:3000"
     volumes:
       - tigerbeetle_data:/data
-    profiles: ["week1", "default"]
+    profiles: ["week1"]
 
   # Week 2: TigerBeetle 3-node cluster
   tigerbeetle-0:
     image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
     container_name: kovra-tigerbeetle-0
+    security_opt:
+      - seccomp=unconfined
     command: start --addresses=0.0.0.0:3000,tigerbeetle-1:3000,tigerbeetle-2:3000 /data/0_0.tigerbeetle
     ports:
       - "3000:3000"
@@ -54,6 +58,8 @@ services:
   tigerbeetle-1:
     image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
     container_name: kovra-tigerbeetle-1
+    security_opt:
+      - seccomp=unconfined
     command: start --addresses=tigerbeetle-0:3000,0.0.0.0:3000,tigerbeetle-2:3000 /data/0_1.tigerbeetle
     ports:
       - "3001:3000"
@@ -64,6 +70,8 @@ services:
   tigerbeetle-2:
     image: ghcr.io/tigerbeetle/tigerbeetle:0.16.68
     container_name: kovra-tigerbeetle-2
+    security_opt:
+      - seccomp=unconfined
     command: start --addresses=tigerbeetle-0:3000,tigerbeetle-1:3000,0.0.0.0:3000 /data/0_2.tigerbeetle
     ports:
       - "3002:3000"
@@ -78,3 +86,31 @@ volumes:
   tigerbeetle_0_data:
   tigerbeetle_1_data:
   tigerbeetle_2_data:
+
+# Week 1 (single node)
+# docker run --rm --security-opt seccomp=unconfined \
+#   -v kovra_tigerbeetle_data:/data \
+#   ghcr.io/tigerbeetle/tigerbeetle:0.16.68 \
+#   format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+
+# # Jalankan
+# docker compose --profile week1 up -d
+
+# Week 2 (3-node cluster) - format semua replica
+# docker run --rm --security-opt seccomp=unconfined \
+#   -v kovra_tigerbeetle_0_data:/data \
+#   ghcr.io/tigerbeetle/tigerbeetle:0.16.68 \
+#   format --cluster=0 --replica=0 --replica-count=3 /data/0_0.tigerbeetle
+
+# docker run --rm --security-opt seccomp=unconfined \
+#   -v kovra_tigerbeetle_1_data:/data \
+#   ghcr.io/tigerbeetle/tigerbeetle:0.16.68 \
+#   format --cluster=0 --replica=1 --replica-count=3 /data/0_1.tigerbeetle
+
+# docker run --rm --security-opt seccomp=unconfined \
+#   -v kovra_tigerbeetle_2_data:/data \
+#   ghcr.io/tigerbeetle/tigerbeetle:0.16.68 \
+#   format --cluster=0 --replica=2 --replica-count=3 /data/0_2.tigerbeetle
+
+# # Jalankan
+# docker compose --profile week2 up -d
