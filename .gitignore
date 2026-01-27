@@ -1,4 +1,4 @@
 .env
 CLAUDE.md
-tigerbeetle
-
+tigerbeetle/data/
+*.tigerbeetle
